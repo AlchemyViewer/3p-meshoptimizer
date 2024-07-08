@@ -1,35 +1,14 @@
 // This file is part of gltfpack; see gltfpack.h for version/license details
 #include "gltfpack.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-struct BasisSettings
-{
-	int etc1s_l;
-	int etc1s_q;
-	int uastc_l;
-	float uastc_q;
-};
 
 static const char* kMimeTypes[][2] = {
     {"image/jpeg", ".jpg"},
     {"image/jpeg", ".jpeg"},
     {"image/png", ".png"},
-};
-
-static const BasisSettings kBasisSettings[10] = {
-    {1, 1, 0, 1.5f},
-    {1, 6, 0, 1.f},
-    {1, 20, 1, 1.0f},
-    {1, 50, 1, 0.75f},
-    {1, 90, 1, 0.5f},
-    {1, 128, 1, 0.4f},
-    {1, 160, 1, 0.34f},
-    {1, 192, 1, 0.29f}, // default
-    {1, 224, 2, 0.26f},
-    {1, 255, 2, 0.f},
+    {"image/ktx2", ".ktx2"},
+    {"image/webp", ".webp"},
 };
 
 static const char* inferMimeType(const char* path)
@@ -61,7 +40,7 @@ static bool parseDataUri(const char* uri, std::string& mime_type, std::string& r
 				size -= base64[base64_size - 1] == '=';
 			}
 
-			void* data = 0;
+			void* data = NULL;
 
 			cgltf_options options = {};
 			cgltf_result res = cgltf_load_buffer_base64(&options, size, base64, &data);
@@ -81,10 +60,22 @@ static bool parseDataUri(const char* uri, std::string& mime_type, std::string& r
 	return false;
 }
 
+static std::string fixupMimeType(const std::string& data, const std::string& mime_type)
+{
+	if (mime_type == "image/jpeg" && data.compare(0, 8, "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a") == 0)
+		return "image/png";
+
+	if (mime_type == "image/png" && data.compare(0, 3, "\xff\xd8\xff") == 0)
+		return "image/jpeg";
+
+	return mime_type;
+}
+
 bool readImage(const cgltf_image& image, const char* input_path, std::string& data, std::string& mime_type)
 {
 	if (image.uri && parseDataUri(image.uri, mime_type, data))
 	{
+		mime_type = fixupMimeType(data, mime_type);
 		return true;
 	}
 	else if (image.buffer_view && image.buffer_view->buffer->data && image.mime_type)
@@ -92,19 +83,24 @@ bool readImage(const cgltf_image& image, const char* input_path, std::string& da
 		const cgltf_buffer_view* view = image.buffer_view;
 
 		data.assign(static_cast<const char*>(view->buffer->data) + view->offset, view->size);
+
 		mime_type = image.mime_type;
+		mime_type = fixupMimeType(data, image.mime_type);
 		return true;
 	}
-	else if (image.uri && *image.uri)
+	else if (image.uri && *image.uri && input_path)
 	{
 		std::string path = image.uri;
 
 		cgltf_decode_uri(&path[0]);
 		path.resize(strlen(&path[0]));
 
-		mime_type = image.mime_type ? image.mime_type : inferMimeType(path.c_str());
+		if (!readFile(getFullPath(path.c_str(), input_path).c_str(), data))
+			return false;
 
-		return readFile(getFullPath(path.c_str(), input_path).c_str(), data);
+		mime_type = image.mime_type ? image.mime_type : inferMimeType(path.c_str());
+		mime_type = fixupMimeType(data, mime_type);
+		return true;
 	}
 	else
 	{
@@ -112,12 +108,12 @@ bool readImage(const cgltf_image& image, const char* input_path, std::string& da
 	}
 }
 
-static int readInt16(const std::string& data, size_t offset)
+static int readInt16BE(const std::string& data, size_t offset)
 {
 	return (unsigned char)data[offset] * 256 + (unsigned char)data[offset + 1];
 }
 
-static int readInt32(const std::string& data, size_t offset)
+static int readInt32BE(const std::string& data, size_t offset)
 {
 	return (unsigned((unsigned char)data[offset]) << 24) |
 	       (unsigned((unsigned char)data[offset + 1]) << 16) |
@@ -125,6 +121,15 @@ static int readInt32(const std::string& data, size_t offset)
 	       unsigned((unsigned char)data[offset + 3]);
 }
 
+static int readInt32LE(const std::string& data, size_t offset)
+{
+	return unsigned((unsigned char)data[offset]) |
+	       (unsigned((unsigned char)data[offset + 1]) << 8) |
+	       (unsigned((unsigned char)data[offset + 2]) << 16) |
+	       (unsigned((unsigned char)data[offset + 3]) << 24);
+}
+
+// https://en.wikipedia.org/wiki/PNG#File_format
 static bool getDimensionsPng(const std::string& data, int& width, int& height)
 {
 	if (data.size() < 8 + 8 + 13 + 4)
@@ -137,12 +142,13 @@ static bool getDimensionsPng(const std::string& data, int& width, int& height)
 	if (data.compare(12, 4, "IHDR") != 0)
 		return false;
 
-	width = readInt32(data, 16);
-	height = readInt32(data, 20);
+	width = readInt32BE(data, 16);
+	height = readInt32BE(data, 20);
 
 	return true;
 }
 
+// https://en.wikipedia.org/wiki/JPEG_File_Interchange_Format#File_format_structure
 static bool getDimensionsJpeg(const std::string& data, int& width, int& height)
 {
 	size_t offset = 0;
@@ -174,18 +180,19 @@ static bool getDimensionsJpeg(const std::string& data, int& width, int& height)
 			if (offset + 10 > data.size())
 				return false;
 
-			width = readInt16(data, offset + 7);
-			height = readInt16(data, offset + 5);
+			width = readInt16BE(data, offset + 7);
+			height = readInt16BE(data, offset + 5);
 
 			return true;
 		}
 
-		offset += 2 + readInt16(data, offset + 2);
+		offset += 2 + readInt16BE(data, offset + 2);
 	}
 
 	return false;
 }
 
+// https://en.wikipedia.org/wiki/PNG#File_format
 static bool hasTransparencyPng(const std::string& data)
 {
 	if (data.size() < 8 + 8 + 13 + 4)
@@ -198,7 +205,7 @@ static bool hasTransparencyPng(const std::string& data)
 	if (data.compare(12, 4, "IHDR") != 0)
 		return false;
 
-	int ctype = data[27];
+	int ctype = data[25];
 
 	if (ctype != 3)
 		return ctype == 4 || ctype == 6;
@@ -207,7 +214,7 @@ static bool hasTransparencyPng(const std::string& data)
 
 	while (offset + 12 <= data.size())
 	{
-		int length = readInt32(data, offset);
+		int length = readInt32BE(data, offset);
 
 		if (length < 0)
 			return false;
@@ -221,24 +228,88 @@ static bool hasTransparencyPng(const std::string& data)
 	return false;
 }
 
+// https://github.khronos.org/KTX-Specification/ktxspec.v2.html
+static bool hasTransparencyKtx2(const std::string& data)
+{
+	if (data.size() < 12 + 17 * 4)
+		return false;
+
+	const char* signature = "\xabKTX 20\xbb\r\n\x1a\n";
+	if (data.compare(0, 12, signature) != 0)
+		return false;
+
+	int dfdOffset = readInt32LE(data, 48);
+	int dfdLength = readInt32LE(data, 52);
+
+	if (dfdLength < 4 + 24 + 16 || unsigned(dfdOffset) > data.size() || unsigned(dfdLength) > data.size() - dfdOffset)
+		return false;
+
+	const int KDF_DF_MODEL_ETC1S = 163;
+	const int KDF_DF_MODEL_UASTC = 166;
+	const int KHR_DF_CHANNEL_UASTC_RGBA = 3;
+	const int KHR_DF_CHANNEL_ETC1S_RGB = 0;
+	const int KHR_DF_CHANNEL_ETC1S_AAA = 15;
+
+	int colorModel = readInt32LE(data, dfdOffset + 12) & 0xff;
+	int channelType1 = (readInt32LE(data, dfdOffset + 28) >> 24) & 0xf;
+	int channelType2 = dfdLength >= 4 + 24 + 16 * 2 ? (readInt32LE(data, dfdOffset + 44) >> 24) & 0xf : channelType1;
+
+	if (colorModel == KDF_DF_MODEL_ETC1S)
+	{
+		return channelType1 == KHR_DF_CHANNEL_ETC1S_RGB && channelType2 == KHR_DF_CHANNEL_ETC1S_AAA;
+	}
+	else if (colorModel == KDF_DF_MODEL_UASTC)
+	{
+		return channelType1 == KHR_DF_CHANNEL_UASTC_RGBA;
+	}
+
+	return false;
+}
+
+// https://developers.google.com/speed/webp/docs/riff_container
+static bool hasTransparencyWebP(const std::string& data)
+{
+	if (data.size() < 12 + 4 + 12)
+		return false;
+
+	if (data.compare(0, 4, "RIFF") != 0)
+		return false;
+	if (data.compare(8, 4, "WEBP") != 0)
+		return false;
+
+	// WebP data may use VP8L, VP8X or VP8 format, but VP8 does not support transparency
+	if (data.compare(12, 4, "VP8L") == 0)
+	{
+		if (unsigned(data[20]) != 0x2f)
+			return false;
+
+		// width (14) | height (14) | alpha_is_used (1) | version_number(3)
+		unsigned int header = readInt32LE(data, 21);
+		return (header & (1 << 28)) != 0;
+	}
+	else if (data.compare(12, 4, "VP8X") == 0)
+	{
+		// zero (2) | icc (1) | alpha (1) | exif (1) | xmp (1) | animation (1) | zero (1)
+		unsigned char header = data[20];
+		return (header & (1 << 4)) != 0;
+	}
+
+	return false;
+}
+
 bool hasAlpha(const std::string& data, const char* mime_type)
 {
 	if (strcmp(mime_type, "image/png") == 0)
 		return hasTransparencyPng(data);
+	else if (strcmp(mime_type, "image/ktx2") == 0)
+		return hasTransparencyKtx2(data);
+	else if (strcmp(mime_type, "image/webp") == 0)
+		return hasTransparencyWebP(data);
 	else
 		return false;
 }
 
-static const char* mimeExtension(const char* mime_type)
-{
-	for (size_t i = 0; i < sizeof(kMimeTypes) / sizeof(kMimeTypes[0]); ++i)
-		if (strcmp(kMimeTypes[i][0], mime_type) == 0)
-			return kMimeTypes[i][1];
-
-	return ".raw";
-}
-
-static bool getDimensions(const std::string& data, const char* mime_type, int& width, int& height)
+bool getDimensions(const std::string& data, const char* mime_type, int& width, int& height)
 {
 	if (strcmp(mime_type, "image/png") == 0)
 		return getDimensionsPng(data, width, height);
@@ -273,214 +344,28 @@ static int roundBlock(int value, bool pow2)
 	return (value + 3) & ~3;
 }
 
-#ifdef __wasi__
-static int execute(const char* cmd, bool ignore_stdout, bool ignore_stderr)
+void adjustDimensions(int& width, int& height, const Settings& settings)
 {
-	return system(cmd);
-}
+	width = int(width * settings.texture_scale);
+	height = int(height * settings.texture_scale);
 
-static std::string getExecutable(const char* name, const char* env)
-{
-	return name;
-}
-#else
-static int execute(const char* cmd_, bool ignore_stdout, bool ignore_stderr)
-{
-#ifdef _WIN32
-	std::string ignore = "nul";
-#else
-	std::string ignore = "/dev/null";
-#endif
-
-	std::string cmd = cmd_;
-
-	if (ignore_stdout)
-		(cmd += " >") += ignore;
-	if (ignore_stderr)
-		(cmd += " 2>") += ignore;
-
-	return system(cmd.c_str());
-}
-
-static std::string getExecutable(const char* name, const char* env)
-{
-	const char* path = getenv(env);
-	path = path ? path : name;
-
-#ifdef _WIN32
-	// when the executable path contains a space, we need to quote the path ourselves
-	if (path[0] != '"' && strchr(path, ' '))
-		return '"' + std::string(path) + '"';
-#endif
-
-	return path;
-}
-#endif
-
-bool checkBasis(bool verbose)
-{
-	std::string cmd = getExecutable("basisu", "BASISU_PATH");
-
-	cmd += " -version";
-
-	int rc = execute(cmd.c_str(), /* ignore_stdout= */ !verbose, /* ignore_stderr= */ !verbose);
-	if (verbose)
-		printf("%s => %d\n", cmd.c_str(), rc);
-
-	return rc == 0;
-}
-
-bool encodeBasis(const std::string& data, const char* mime_type, std::string& result, const ImageInfo& info, const Settings& settings)
-{
-	// TODO: Support texture_scale and texture_pow2 via new -resample switch from https://github.com/BinomialLLC/basis_universal/pull/226
-	TempFile temp_input(mimeExtension(mime_type));
-	TempFile temp_output(".ktx2");
-
-	if (!writeFile(temp_input.path.c_str(), data))
-		return false;
-
-	std::string cmd = getExecutable("basisu", "BASISU_PATH");
-
-	int quality = settings.texture_quality[info.kind];
-	bool uastc = settings.texture_uastc[info.kind];
-
-	const BasisSettings& bs = kBasisSettings[quality - 1];
-
-	cmd += " -mipmap";
-
-	if (settings.texture_flipy)
-		cmd += " -y_flip";
-
-	if (info.normal_map)
+	if (settings.texture_limit && (width > settings.texture_limit || height > settings.texture_limit))
 	{
-		cmd += " -normal_map";
-		// for optimal quality we should specify seperate_rg_to_color_alpha but this requires renderer awareness
-	}
-	else if (!info.srgb)
-	{
-		cmd += " -linear";
+		float limit_scale = float(settings.texture_limit) / float(width > height ? width : height);
+
+		width = int(width * limit_scale);
+		height = int(height * limit_scale);
 	}
 
-	if (uastc)
-	{
-		char cs[128];
-		sprintf(cs, " -uastc_level %d -uastc_rdo_l %.2f", bs.uastc_l, bs.uastc_q);
-
-		cmd += " -uastc";
-		cmd += cs;
-		cmd += " -uastc_rdo_d 1024";
-	}
-	else
-	{
-		char cs[128];
-		sprintf(cs, " -comp_level %d -q %d", bs.etc1s_l, bs.etc1s_q);
-
-		cmd += cs;
-	}
-
-	cmd += " -ktx2";
-
-	if (uastc)
-		cmd += " -ktx2_zstandard_level 9";
-
-	cmd += " -file ";
-	cmd += temp_input.path;
-	cmd += " -output_file ";
-	cmd += temp_output.path;
-
-	int rc = execute(cmd.c_str(), /* ignore_stdout= */ true, /* ignore_stderr= */ false);
-	if (settings.verbose > 1)
-		printf("%s => %d\n", cmd.c_str(), rc);
-
-	return rc == 0 && readFile(temp_output.path.c_str(), result);
+	width = roundBlock(width, settings.texture_pow2);
+	height = roundBlock(height, settings.texture_pow2);
 }
 
-bool checkKtx(bool verbose)
+const char* mimeExtension(const char* mime_type)
 {
-	std::string cmd = getExecutable("toktx", "TOKTX_PATH");
+	for (size_t i = 0; i < sizeof(kMimeTypes) / sizeof(kMimeTypes[0]); ++i)
+		if (strcmp(kMimeTypes[i][0], mime_type) == 0)
+			return kMimeTypes[i][1];
 
-	cmd += " --version";
-
-	int rc = execute(cmd.c_str(), /* ignore_stdout= */ !verbose, /* ignore_stderr= */ !verbose);
-	if (verbose)
-		printf("%s => %d\n", cmd.c_str(), rc);
-
-	return rc == 0;
-}
-
-bool encodeKtx(const std::string& data, const char* mime_type, std::string& result, const ImageInfo& info, const Settings& settings)
-{
-	int width = 0, height = 0;
-	if (!getDimensions(data, mime_type, width, height))
-		return false;
-
-	TempFile temp_input(mimeExtension(mime_type));
-	TempFile temp_output(".ktx2");
-
-	if (!writeFile(temp_input.path.c_str(), data))
-		return false;
-
-	std::string cmd = getExecutable("toktx", "TOKTX_PATH");
-
-	int quality = settings.texture_quality[info.kind];
-	bool uastc = settings.texture_uastc[info.kind];
-
-	const BasisSettings& bs = kBasisSettings[quality - 1];
-
-	cmd += " --t2";
-	cmd += " --2d";
-	cmd += " --genmipmap";
-	cmd += " --nowarn";
-
-	int newWidth = roundBlock(int(width * settings.texture_scale), settings.texture_pow2);
-	int newHeight = roundBlock(int(height * settings.texture_scale), settings.texture_pow2);
-
-	if (newWidth != width || newHeight != height)
-	{
-		char wh[128];
-		sprintf(wh, " --resize %dx%d", newWidth, newHeight);
-		cmd += wh;
-	}
-
-	if (settings.texture_flipy)
-		cmd += " --lower_left_maps_to_s0t0";
-
-	if (uastc)
-	{
-		char cs[128];
-		sprintf(cs, " %d --uastc_rdo_l %.2f", bs.uastc_l, bs.uastc_q);
-
-		cmd += " --uastc";
-		cmd += cs;
-		cmd += " --uastc_rdo_d 1024";
-		cmd += " --zcmp 9";
-	}
-	else
-	{
-		char cs[128];
-		sprintf(cs, " --clevel %d --qlevel %d", bs.etc1s_l, bs.etc1s_q);
-
-		cmd += " --bcmp";
-		cmd += cs;
-
-		// for optimal quality we should specify separate_rg_to_color_alpha but this requires renderer awareness
-		if (info.normal_map)
-			cmd += " --normal_map";
-	}
-
-	if (info.srgb)
-		cmd += " --srgb";
-	else
-		cmd += " --linear";
-
-	cmd += " -- ";
-	cmd += temp_output.path;
-	cmd += " ";
-	cmd += temp_input.path;
-
-	int rc = execute(cmd.c_str(), /* ignore_stdout= */ false, /* ignore_stderr= */ false);
-	if (settings.verbose > 1)
-		printf("%s => %d\n", cmd.c_str(), rc);
-
-	return rc == 0 && readFile(temp_output.path.c_str(), result);
+	return ".raw";
 }

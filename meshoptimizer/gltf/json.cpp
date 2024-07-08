@@ -14,14 +14,14 @@ void comma(std::string& s)
 void append(std::string& s, size_t v)
 {
 	char buf[32];
-	sprintf(buf, "%zu", v);
+	snprintf(buf, sizeof(buf), "%zu", v);
 	s += buf;
 }
 
 void append(std::string& s, float v)
 {
-	char buf[512];
-	sprintf(buf, "%.9g", v);
+	char buf[64];
+	snprintf(buf, sizeof(buf), "%.9g", v);
 	s += buf;
 }
 
@@ -35,7 +35,7 @@ void append(std::string& s, const std::string& v)
 	s += v;
 }
 
-void appendJson(std::string& s, const char* begin, const char* end)
+void appendJson(std::string& s, const char* data)
 {
 	enum State
 	{
@@ -44,7 +44,7 @@ void appendJson(std::string& s, const char* begin, const char* end)
 		Quoted
 	} state = None;
 
-	for (const char* it = begin; it != end; ++it)
+	for (const char* it = data; *it; ++it)
 	{
 		char ch = *it;
 
@@ -60,7 +60,7 @@ void appendJson(std::string& s, const char* begin, const char* end)
 			break;
 
 		case Quoted:
-			state = (ch == '"') ? None : (ch == '\\') ? Escape : Quoted;
+			state = (ch == '"') ? None : (ch == '\\' ? Escape : Quoted);
 			break;
 
 		case Escape:

@@ -1,3 +1,7 @@
+#ifndef __wasi__
+#error This file contains libc stubs for WASI SDK and should only be used in non-Emscripten WebAssembly builds
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 #include <assert.h>
@@ -100,7 +104,7 @@ extern "C" void* memset(void* ptr, int value, size_t num)
 
 void* operator new(size_t size)
 {
-	return sbrk(size);
+	return sbrk((size + 7) & ~7);
 }
 
 void operator delete(void* ptr) throw()

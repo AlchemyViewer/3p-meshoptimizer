@@ -32,10 +32,6 @@ function init(wasm) {
  * iface should contain the following methods:
  * read(path): Given a path, return a Uint8Array with the contents of that path
  * write(path, data): Write the specified Uint8Array to the provided path
- *
- * When texture compression is requested using external compressor such as toktx, iface must provide two additional methods:
- * execute(command): Run the requested command and return the return code
- * unlink(path): Remove the requested file (will be called with paths to temp files after texture compression finishes)
  */
 function pack(args, iface) {
 	if (!ready) {
@@ -51,9 +47,9 @@ function pack(args, iface) {
 		output.position = 0;
 		output.size = 0;
 
-		interface = iface;
+		fs_interface = iface;
 		var result = instance.exports.pack(argv.length, buf);
-		interface = undefined;
+		fs_interface = undefined;
 
 		instance.exports.free(buf);
 
@@ -75,7 +71,7 @@ var WASI_ENOSYS = 52;
 
 var ready;
 var instance;
-var interface;
+var fs_interface;
 
 var output = { data: new Uint8Array(), position: 0, size: 0 };
 var fds = { 1: output, 2: output, 3: { mount: "/", path: "/" }, 4: { mount: "/gltfpack-$pwd", path: "" } };
@@ -131,11 +127,11 @@ var wasi = {
 			file.data = new Uint8Array(4096);
 			file.size = 0;
 			file.close = function () {
-				interface.write(file.name, new Uint8Array(file.data.buffer, 0, file.size));
+				fs_interface.write(file.name, new Uint8Array(file.data.buffer, 0, file.size));
 			};
 		} else {
 			try {
-				file.data = interface.read(file.name);
+				file.data = fs_interface.read(file.name);
 
 				if (!file.data) {
 					return WASI_EIO;
@@ -152,22 +148,6 @@ var wasi = {
 
 		heap.setUint32(opened_fd, fd, true);
 		return 0;
-	},
-
-	path_unlink_file: function(parent_fd, path, path_len) {
-		if (!fds[parent_fd] || fds[parent_fd].path === undefined) {
-			return WASI_EBADF;
-		}
-
-		var heap = getHeap();
-		var name = fds[parent_fd].path + getString(heap.buffer, path, path_len);
-
-		try {
-			interface.unlink(name);
-			return 0;
-		} catch (err) {
-			return WASI_EIO;
-		}
 	},
 
 	path_filestat_get: function(parent_fd, flags, path, path_len, buf) {
@@ -307,21 +287,6 @@ var wasi = {
 
 		heap.setUint32(nwritten, written, true);
 		return 0;
-	},
-
-	path_readlink: function(fd, path, path_len, buf, buf_len, bufused) {
-		if (fd !== -1) {
-			return WASI_ENOSYS;
-		}
-
-		var heap = getHeap();
-		var command = getString(heap.buffer, path, path_len);
-
-		try {
-			return interface.execute(command);
-		} catch (err) {
-			return WASI_ENOSYS;
-		}
 	},
 };
 
