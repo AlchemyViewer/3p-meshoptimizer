@@ -15,7 +15,7 @@ if [ -z "$AUTOBUILD" ] ; then
     exit 1
 fi
 
-if [ "$OSTYPE" = "cygwin" ] ; then
+if [[ "$OSTYPE" == "cygwin" || "$OSTYPE" == "msys" ]] ; then
     autobuild="$(cygpath -u $AUTOBUILD)"
 else
     autobuild="$AUTOBUILD"
@@ -49,7 +49,7 @@ pushd "$MESHOPT_SOURCE_DIR"
                     -DCMAKE_C_FLAGS="$plainopts" \
                     -DCMAKE_CXX_FLAGS="$opts" \
                     -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$stage")"
-                cmake --build . --config Release --parallel
+                cmake --build . --config Release --parallel $AUTOBUILD_CPU_COUNT
                 cmake --install . --config Release
             popd
 
@@ -65,36 +65,35 @@ pushd "$MESHOPT_SOURCE_DIR"
         ;;
 
         darwin*)
-            # Setup deploy target
             export MACOSX_DEPLOYMENT_TARGET="$LL_BUILD_DARWIN_DEPLOY_TARGET"
 
-            # Setup build flags
-            opts="${TARGET_OPTS:--arch $AUTOBUILD_CONFIGURE_ARCH $LL_BUILD_RELEASE}"
-            plainopts="$(remove_cxxstd $opts)"
+            for arch in x86_64 arm64 ; do
+                ARCH_ARGS="-arch $arch"
+                opts="${TARGET_OPTS:-$ARCH_ARGS $LL_BUILD_RELEASE}"
+                cc_opts="$(remove_cxxstd $opts)"
+                ld_opts="$ARCH_ARGS"
 
-            mkdir -p "build"
-            pushd "build"
-                cmake -G Ninja .. \
-                    -DCMAKE_C_FLAGS="$opts" \
-                    -DCMAKE_CXX_FLAGS="$plainopts" \
-                    -DCMAKE_BUILD_TYPE=Release \
-                    -DCMAKE_INSTALL_PREFIX:STRING="${stage}" \
-                    -DCMAKE_OSX_ARCHITECTURES:STRING=x86_64 \
-                    -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET}
+                mkdir -p "build_$arch"
+                pushd "build_$arch"
+                    CFLAGS="$cc_opts" \
+                    CXXFLAGS="$opts" \
+                    LDFLAGS="$ld_opts" \
+                    cmake -G Ninja .. \
+                        -DCMAKE_C_FLAGS="$cc_opts" \
+                        -DCMAKE_CXX_FLAGS="$opts" \
+                        -DCMAKE_BUILD_TYPE=Release \
+                        -DCMAKE_INSTALL_PREFIX="$stage" \
+                        -DCMAKE_INSTALL_LIBDIR="$stage/lib/release/$arch" \
+                        -DCMAKE_INSTALL_INCLUDEDIR="$stage/include/meshoptimizer" \
+                        -DCMAKE_OSX_ARCHITECTURES:STRING="$arch" \
+                        -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET}
 
-                cmake --build . --config Release --parallel
-                cmake --install . --config Release
-            popd
+                    cmake --build . --config Release --parallel $AUTOBUILD_CPU_COUNT
+                    cmake --install . --config Release
+                popd
+            done
 
-            mkdir -p "$stage/lib/release"
-            mv "$stage/lib/libmeshoptimizer.a" \
-                "$stage/lib/release/libmeshoptimizer.a"
-
-            mkdir -p "$stage/include/meshoptimizer"
-            mv "$stage/include/meshoptimizer.h" \
-                "$stage/include/meshoptimizer/meshoptimizer.h"
-
-            rm -r "$stage/lib/cmake"
+            lipo -create -output "$stage/lib/release/libmeshoptimizer.a" "$stage/lib/release/x86_64/libmeshoptimizer.a" "$stage/lib/release/arm64/libmeshoptimizer.a"
         ;;
 
         linux*)
@@ -116,8 +115,8 @@ pushd "$MESHOPT_SOURCE_DIR"
                     -DCMAKE_C_FLAGS="$opts" \
                     -DCMAKE_CXX_FLAGS="$plainopts" \
                     -DCMAKE_INSTALL_PREFIX:STRING="${stage}"
-    
-                cmake --build . --config Release --parallel
+
+                cmake --build . --config Release --parallel $AUTOBUILD_CPU_COUNT
                 cmake --install . --config Release
             popd
 
