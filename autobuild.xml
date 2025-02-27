@@ -4,9 +4,9 @@
     <key>package_description</key>
     <map>
       <key>canonical_repo</key>
-      <string>https://github.com/secondlife/3p-meshoptimizer</string>
+      <string>https://github.com/AlchemyViewer/3p-meshoptimizer</string>
       <key>copyright</key>
-      <string>Copyright (c) 2016-2021 Arseny Kapoulkine</string>
+      <string>Copyright (c) 2016-2025 Arseny Kapoulkine</string>
       <key>description</key>
       <string>Meshoptimizer. Mesh optimization library.</string>
       <key>license</key>
@@ -71,7 +71,7 @@
           <key>name</key>
           <string>darwin</string>
         </map>
-        <key>linux64</key>
+        <key>linux</key>
         <map>
           <key>configurations</key>
           <map>
@@ -91,7 +91,7 @@
             <string>lib/release/*.a</string>
           </array>
           <key>name</key>
-          <string>linux64</string>
+          <string>linux</string>
         </map>
         <key>windows</key>
         <map>
@@ -110,36 +110,15 @@
           </map>
           <key>manifest</key>
           <array>
+            <string>lib/debug/meshoptimizer.lib</string>
             <string>lib/release/meshoptimizer.lib</string>
           </array>
           <key>name</key>
           <string>windows</string>
         </map>
-        <key>windows64</key>
-        <map>
-          <key>configurations</key>
-          <map>
-            <key>default</key>
-            <map>
-              <key>build</key>
-              <map>
-              </map>
-              <key>default</key>
-              <string>true</string>
-              <key>name</key>
-              <string>default</string>
-            </map>
-          </map>
-          <key>manifest</key>
-          <array>
-            <string>lib/release/meshoptimizer.lib</string>
-          </array>
-          <key>name</key>
-          <string>windows64</string>
-        </map>
       </map>
       <key>source_directory</key>
-      <string>openssl</string>
+      <string>meshoptimizer</string>
       <key>use_scm_version</key>
       <boolean>true</boolean>
     </map>

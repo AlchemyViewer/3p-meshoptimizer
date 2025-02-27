@@ -29,10 +29,12 @@ source_environment_tempfile="$stage/source_environment.sh"
 "$autobuild" source_environment > "$source_environment_tempfile"
 . "$source_environment_tempfile"
 
-# remove_cxxstd
+# remove_cxxstd apply_patch
 source "$(dirname "$AUTOBUILD_VARIABLES_FILE")/functions"
 
 MESHOPT_SOURCE_DIR="meshoptimizer"
+
+apply_patch "$top/patches/update-cmake-version-compat.patch" "$MESHOPT_SOURCE_DIR"
 
 pushd "$MESHOPT_SOURCE_DIR"
     case "$AUTOBUILD_PLATFORM" in
@@ -40,22 +42,43 @@ pushd "$MESHOPT_SOURCE_DIR"
         windows*)
             load_vsvars
 
-            opts="$(replace_switch /Zi /Z7 $LL_BUILD_RELEASE)"
-            plainopts="$(remove_switch /GR $(remove_cxxstd $opts))"
+            mkdir -p "build_debug"
+            pushd "build_debug"
+                opts="$(replace_switch /Zi /Z7 $LL_BUILD_DEBUG)"
+                plainopts="$(remove_switch /GR $(remove_cxxstd $opts))"
 
-            mkdir -p "build"
-            pushd "build"
+                cmake -G Ninja .. -DCMAKE_BUILD_TYPE=Debug \
+                    -DCMAKE_C_FLAGS="$plainopts" \
+                    -DCMAKE_CXX_FLAGS="$opts" \
+                    -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$stage")" \
+                    -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT="Embedded"
+
+                cmake --build . --config Debug --parallel $AUTOBUILD_CPU_COUNT
+                cmake --install . --config Debug
+
+                mkdir -p "$stage/lib/debug"
+                mv "$stage/lib/meshoptimizer.lib" \
+                    "$stage/lib/debug/meshoptimizer.lib"
+            popd
+
+            mkdir -p "build_release"
+            pushd "build_release"
+                opts="$(replace_switch /Zi /Z7 $LL_BUILD_RELEASE)"
+                plainopts="$(remove_switch /GR $(remove_cxxstd $opts))"
+
                 cmake -G Ninja .. -DCMAKE_BUILD_TYPE=Release \
                     -DCMAKE_C_FLAGS="$plainopts" \
                     -DCMAKE_CXX_FLAGS="$opts" \
-                    -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$stage")"
+                    -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$stage")" \
+                    -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT="Embedded"
+
                 cmake --build . --config Release --parallel $AUTOBUILD_CPU_COUNT
                 cmake --install . --config Release
-            popd
 
-            mkdir -p "$stage/lib/release"
-            mv "$stage/lib/meshoptimizer.lib" \
-                "$stage/lib/release/meshoptimizer.lib"
+                mkdir -p "$stage/lib/release"
+                mv "$stage/lib/meshoptimizer.lib" \
+                    "$stage/lib/release/meshoptimizer.lib"
+            popd
 
             mkdir -p "$stage/include/meshoptimizer"
             mv "$stage/include/meshoptimizer.h" \
